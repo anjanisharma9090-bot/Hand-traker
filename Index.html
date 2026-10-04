@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cat's Cradle</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#050818;font-family:system-ui,sans-serif}
+  canvas{display:block}
+  video{display:none}
+  #scan{position:fixed;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(to bottom,rgba(0,0,0,0) 0,rgba(0,0,0,0) 2px,rgba(0,0,0,.22) 3px);
+    mix-blend-mode:multiply}
+  #hud{position:fixed;left:16px;bottom:14px;color:#8fe9ff;font-size:13px;line-height:1.5;
+    text-shadow:0 0 8px #00e5ff;pointer-events:none;max-width:90vw}
+  #status{color:#ff5fd2}
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted></video>
+<div id="scan"></div>
+<div id="hud">
+  <div id="status">Allow camera access, then hold up both hands.</div>
+  <div>Press V to show or hide the camera feed</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script>
+const TIPS = [4, 8, 12, 16, 20];
+const CONN = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+              [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+const FINGER_HUE = [185, 300, 55, 185, 300];   // cyan, magenta, yellow, cyan, magenta
+const PAIRS = [];
+for (let i = 0; i < 5; i++) PAIRS.push([i, i]);
+for (let i = 0; i < 4; i++) PAIRS.push([i, i + 1], [i + 1, i]);
+
+let video, ctx, latest = [], showVideo = true;
+let strings = {}, particles = [], lastStatus = '';
+
+function setStatus(t) {
+  if (t === lastStatus) return;
+  lastStatus = t;
+  document.getElementById('status').textContent = t;
+}
+
+function setup() {
+  pixelDensity(1);
+  createCanvas(windowWidth, windowHeight);
+  ctx = drawingContext;
+  video = document.getElementById('cam');
+
+  const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+  hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+  hands.onResults(r => { latest = r.multiHandLandmarks || []; });
+
+  const cam = new Camera(video, {
+    width: 1280, height: 720,
+    onFrame: async () => { await hands.send({ image: video }); }
+  });
+  cam.start().catch(e => setStatus('Camera blocked. Allow access and reload (needs https or localhost).'));
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+function keyPressed() { if (key === 'v' || key === 'V') showVideo = !showVideo; }
+
+function draw() {
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const s = Math.max(width / vw, height / vh);
+  const dw = vw * s, dh = vh * s, ox = (width - dw) / 2, oy = (height - dh) / 2;
+
+  // background: mirrored video, or deep midnight blue
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.shadowBlur = 0;
+  if (showVideo && video.readyState > 1) {
+    ctx.save();
+    ctx.translate(width, 0); ctx.scale(-1, 1);
+    ctx.drawImage(video, ox, oy, dw, dh);
+    ctx.restore();
+    ctx.fillStyle = 'rgba(5,8,30,.5)';
+    ctx.fillRect(0, 0, width, height);
+  } else {
+    ctx.fillStyle = '#050818';
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  // mirror landmarks to screen space, order hands left to right on screen
+  const hands = latest.map(h => h.map(l => ({ x: ox + (1 - l.x) * dw, y: oy + l.y * dh })))
+                      .sort((a, b) => a[0].x - b[0].x);
+
+  if (hands.length === 2) setStatus('');
+  else if (video.readyState > 1) setStatus(hands.length ? 'Show your other hand.' : 'Hold up both hands.');
+
+  ctx.globalCompositeOperation = 'lighter';
+  if (hands.length === 2) drawStrings(hands[0], hands[1]);
+  hands.forEach(drawHand);
+  drawParticles();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.shadowBlur = 0;
+}
+
+function drawHand(h) {
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = 'rgba(120,230,255,.35)';
+  ctx.shadowBlur = 6; ctx.shadowColor = '#00e5ff';
+  ctx.beginPath();
+  for (const [a, b] of CONN) { ctx.moveTo(h[a].x, h[a].y); ctx.lineTo(h[b].x, h[b].y); }
+  ctx.stroke();
+  for (let i = 0; i < 21; i++) {
+    const hue = FINGER_HUE[Math.max(0, Math.floor((i - 1) / 4))];
+    const col = `hsl(${hue},100%,62%)`;
+    ctx.shadowBlur = 18; ctx.shadowColor = col;
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.arc(h[i].x, h[i].y, TIPS.includes(i) ? 6 : 3.5, 0, 6.2832);
+    ctx.fill();
+  }
+}
+
+function drawStrings(A, B) {
+  const maxD = Math.hypot(width, height) * 0.6;
+  for (const [i, j] of PAIRS) {
+    const p = A[TIPS[i]], q = B[TIPS[j]];
+    const key = i + '-' + j;
+    const st = strings[key] || (strings[key] = { sag: 0, v: 0, d: 0 });
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    const t = Math.min(1, d / maxD);              // 0 = close, 1 = taut
+
+    // elastic spring: slack hangs low, quick stretches make it wobble
+    st.v += (d - st.d) * 0.04;
+    st.d = d;
+    st.v += ((1 - t) * 70 - st.sag) * 0.12;
+    st.v *= 0.82;
+    st.sag += st.v;
+
+    const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2 + st.sag;
+    const hue = 185 - t * 130;
+    const w = 3.2 - t * 2.2;
+    const g = ctx.createLinearGradient(p.x, p.y, q.x, q.y);
+    g.addColorStop(0, '#00f0ff');
+    g.addColorStop(0.2 + t * 0.6, '#ff2bd6');
+    g.addColorStop(1, '#ffe600');
+
+    ctx.lineCap = 'round';
+    ctx.shadowColor = `hsl(${hue},100%,60%)`;
+    ctx.strokeStyle = g;
+    ctx.globalAlpha = 0.35; ctx.lineWidth = w * 3; ctx.shadowBlur = 28;
+    strokePath(p, mx, my, q);
+    ctx.globalAlpha = 0.95; ctx.lineWidth = Math.max(0.8, w); ctx.shadowBlur = 14;
+    strokePath(p, mx, my, q);
+    ctx.globalAlpha = 1;
+
+    // fingertips of both hands touching: spark burst
+    if (i === j && d < 42) burst(mx, my, FINGER_HUE[i]);
+  }
+}
+
+function strokePath(p, cx, cy, q) {
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y);
+  ctx.quadraticCurveTo(cx, cy, q.x, q.y);
+  ctx.stroke();
+}
+
+function burst(x, y, hue) {
+  for (let n = 0; n < 6 && particles.length < 500; n++) {
+    const a = Math.random() * 6.2832, sp = 1.5 + Math.random() * 5;
+    particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, hue: hue + Math.random() * 40 - 20 });
+  }
+}
+
+function drawParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vx *= 0.96; p.vy = p.vy * 0.96 + 0.05;
+    p.life -= 0.025;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    const c = `hsl(${p.hue},100%,60%)`;
+    ctx.shadowBlur = 12; ctx.shadowColor = c;
+    ctx.fillStyle = c;
+    ctx.globalAlpha = p.life;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 2.5 * p.life + 0.5, 0, 6.2832); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+</script>
+</body>
+</html>
